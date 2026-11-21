@@ -49,8 +49,12 @@ def main() -> int:
     parser.add_argument("--json", dest="json_out", default="", help="把报告写到文件")
     args = parser.parse_args()
 
-    root = Path(args.root).expanduser().resolve() if args.root else _common.find_root()
-    platform = _common.ensure_platform(root)
+    root, platform, mode = _common.resolve(args.root)
+    if platform is None:
+        print("冒烟执行  已跳过：需要 NewDiag 源码")
+        print("  生成 flow.py 与运行库都来自平台，脱离源码无法真实执行。")
+        print("  本机有源码时会自动启用；在此之前可用 validate_workflow.py 做结构预检。")
+        return 0
     python = _common.platform_python(root)
 
     doc = _common.load_doc(args.workflow, platform["expand"])

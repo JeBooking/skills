@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import _common
+import standalone
 
 
 def main() -> int:
@@ -28,10 +29,9 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true", help="只打印问题汇总")
     args = parser.parse_args()
 
-    root = Path(args.root).expanduser().resolve() if args.root else _common.find_root()
-    platform = _common.ensure_platform(root)
+    root, platform, mode = _common.resolve(args.root)
 
-    doc = _common.load_doc(args.workflow, platform["expand"])
+    doc = _common.load_doc(args.workflow, platform["expand"] if platform else None)
     _common.recompact(doc, platform)
 
     errors: list[str] = []
@@ -49,7 +49,7 @@ def main() -> int:
             for name in sorted(referenced):
                 errors.append(f"工程「{name}」没有登记信息：本次未提供 --projects，无法探测接口")
         else:
-            functions = _common.probe(doc, projects, platform)
+            functions = _common.probe(doc, projects, platform, _common.platform_python(root))
             for key, message in _common.probe_failures(functions):
                 if "工程未登记" in message:
                     continue  # 已经按工程报过一次，不按接口重复刷屏
@@ -57,7 +57,10 @@ def main() -> int:
             usable = {key: value for key, value in functions.items() if isinstance(value, list)}
             functions = usable
 
-    issues = platform["validate_doc"](doc, functions if functions else None)
+    if platform is not None:
+        issues = platform["validate_doc"](doc, functions if functions else None)
+    else:
+        issues = standalone.validate(doc, functions if functions else None)
     warnings.extend(_view_consistency(doc))
     for issue in issues:
         text = str(issue.get("message") or "")
@@ -98,6 +101,7 @@ def main() -> int:
 
     if not args.quiet:
         node_count, edge_count = _common.doc_shape(doc)
+        print(f"模式    {'发布级（平台 compiler）' if mode == 'platform' else '独立预检（内置规则）'}")
         print(f"流程    {Path(args.workflow).name}（{node_count} 节点，{edge_count} 条连线）")
         print(f"引用工程 {', '.join(sorted(referenced)) or '无'}")
         if calls:
@@ -122,7 +126,8 @@ def main() -> int:
             print("\n参数明细")
             for line in arg_details:
                 print(f"  - {line}")
-        print("\n未通过：以上错误在平台里同样会拦住发布。")
+        print("\n未通过：以上错误在平台里同样会拦住发布。" if mode == "platform"
+              else "\n未通过：以上按内置规则判定，平台侧应会拦下同类问题。")
         print("接口/参数类问题见 references/troubleshooting.md；结构类问题见 references/workflow-format.md。")
         return 1
 
@@ -131,14 +136,20 @@ def main() -> int:
     else:
         print("\n通过：结构与槽位校验无 error，可以进入冒烟执行。")
         if args.projects:
-            print(
-                "下一步：\n  {python} {script} {workflow} --projects {projects}".format(
-                    python=_common.platform_python(root),
-                    script=Path(__file__).resolve().with_name("smoke_run.py"),
-                    workflow=Path(args.workflow).expanduser().resolve(),
-                    projects=Path(args.projects).expanduser().resolve(),
+            if mode == "platform":
+                print(
+                    "下一步：\n  {python} {script} {workflow} --projects {projects}".format(
+                        python=_common.platform_python(root),
+                        script=Path(__file__).resolve().with_name("smoke_run.py"),
+                        workflow=Path(args.workflow).expanduser().resolve(),
+                        projects=Path(args.projects).expanduser().resolve(),
+                    )
                 )
-            )
+            else:
+                print("下一步：本机装上 NewDiag 仓库后再跑冒烟；独立模式下只能做到结构预检。")
+    if mode != "platform":
+        print("\n注：未使用平台实现（本机没有可导入的 NewDiag 仓库），以上由内置规则给出。")
+        print("拿到平台源码后重跑本命令，结论以平台为准。")
     return 0
 
 

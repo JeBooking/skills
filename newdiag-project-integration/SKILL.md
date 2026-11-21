@@ -34,16 +34,25 @@ agent_created: true
 
 ### 0. 定位
 
-`scripts/` 下三个脚本会自动找仓库根（`NEWDIAG_ROOT` → skill 位置 → 当前目录向上）。在其他仓库里工作时设一次：
+`scripts/` 下三个脚本会自动判断本机有没有 NewDiag 仓库（`NEWDIAG_ROOT` → skill 位置 → 当前目录向上）：
+
+| 模式 | 触发 | 能力 |
+|---|---|---|
+| 平台模式 | 找到仓库且能 import `backend` | 探针、发布级校验、生成代码冒烟，结论与平台发布一致 |
+| 独立模式 | 找不到仓库，或依赖没装 | 内置探针 + 内置结构校验；冒烟明确跳过 |
+
+独立模式不需要平台源码，靠 `scripts/builtin_probe.py` 与 `scripts/standalone.py` 里的内置规则（对齐 v1.19）。它**不冒充发布级**：输出会标注模式，拿到源码后应重跑一次；这两份内置规则也要随平台升级同步。
+
+在其他仓库里工作时设一次环境变量，可强制进入平台模式：
 
 ```bash
 export NEWDIAG_ROOT="D:/FILE/Projects/NewDiag"       # bash
 $env:NEWDIAG_ROOT = "D:\FILE\Projects\NewDiag"        # PowerShell
 ```
 
-也可以给任一脚本传 `--root`。
+也可以给任一脚本传 `--root`（显式指定就必须成功，否则报错，不会静默降级）。
 
-工程登记表里的 `path` 支持 `@newdiag/...` 前缀，表示相对平台仓库根（`assets/projects.example.json` 就用它指向仓库自带的示例工程）；换成自己的工程时写绝对路径即可。
+工程登记表里的 `path` 支持 `@newdiag/...` 前缀，表示相对平台仓库根（`assets/projects.example.json` 就用它指向仓库自带的示例工程）；独立模式下没有仓库根，换成绝对路径。
 
 命令里的解释器统一用项目 venv：Windows `backend/.venv/Scripts/python.exe`，Linux/macOS `backend/.venv/bin/python`。`smoke_run.py` 需要它（要用到 SQLAlchemy）。
 
@@ -130,7 +139,7 @@ curl -X POST http://127.0.0.1:8000/api/flows/import \
 ## 硬规则
 
 1. **接口不猜**：任何 `interface` / `function` / 参数名，都必须出现在探针输出里
-2. **三级验证缺一不可**：probe → validate → smoke，任一没过就不算接完
+2. **有平台时三级验证缺一不可**：probe → validate → smoke，任一没过就不算接完。独立模式只能做到结构预检，接入平台后必须补冒烟
 3. **跨节点不传值**：`previous` 只指本节点上一步。下个节点要数据就自己 fetch（命中缓存）
 4. **present 的 view 与返回形状必须一致**：同一方法只能配一种 view
 5. **一个槽位只填一个调用**：要串联就分开填 fetch / process / present / decide

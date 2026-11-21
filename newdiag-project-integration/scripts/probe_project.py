@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import _common
 
@@ -34,9 +35,7 @@ def main() -> int:
     parser.add_argument("--root", default="", help="NewDiag 仓库根；缺省自动定位")
     args = parser.parse_args()
 
-    root = Path(args.root).expanduser().resolve() if args.root else _common.find_root()
-    _common.ensure_platform(root)
-    from app.services.projects import probe as run_probe
+    root, platform, mode = _common.resolve(args.root)
 
     project_path = Path(args.path).expanduser().resolve()
     if not project_path.is_dir():
@@ -47,18 +46,32 @@ def main() -> int:
         print(f"解释器不存在：{python}", file=sys.stderr)
         return 2
 
-    payload = {
-        "name": project_path.name,
-        "path": str(project_path),
-        "module": args.module,
-        "python": python,
-        "factory": "",
-        "catalog": True,
-    }
-    result = run_probe(payload)
+    if platform is not None:
+        from app.services.projects import probe as run_probe
+
+        result = run_probe(
+            {
+                "name": project_path.name,
+                "path": str(project_path),
+                "module": args.module,
+                "python": python,
+                "factory": "",
+                "catalog": True,
+            }
+        )
+    else:
+        project = SimpleNamespace(
+            name=project_path.name,
+            path=str(project_path),
+            module=args.module,
+            python=python,
+            factory="",
+        )
+        result = _common.run_builtin_probe(project, args.module, python)
     if args.json_out:
         _common.json_dump(result, args.json_out)
 
+    print(f"模式    {_mode_label(mode)}")
     print(f"工程    {project_path}")
     print(f"模块    {args.module}")
     print(f"解释器  {python}")
@@ -111,7 +124,13 @@ def main() -> int:
     print(f'  path:   "{project_path}"')
     print(f'  module: "{args.module}"')
     print(f'  python: "{python}"')
+    if mode != "platform":
+        print("\n本机没有 NewDiag 仓库，以上由内置探针给出；接入平台后再用平台模式复核一次。")
     return 0
+
+
+def _mode_label(mode: str) -> str:
+    return "平台探针（规则来自本机 NewDiag）" if mode == "platform" else "独立探针（内置规则，未与平台比对）"
 
 
 def _hints(functions: list[dict], blocked: list[dict]) -> list[str]:

@@ -1,19 +1,27 @@
 """接入 skill 的公共装配：定位仓库、装载平台模块、读工程登记表。
 
-脚本不复制平台规则：校验与探测一律调用 backend 里的实现，避免 skill 与平台漂移。
+两套模式：
+- 平台模式：本机有 NewDiag 源码时，校验与探测直接调用 backend 实现，结论与发布一致
+- 独立模式：没有源码时退回内置实现（builtin_probe.py / standalone.py），只做结构预检
+
+独立模式下的内置规则需要随平台升级同步；它的结论不冒充「发布级」。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
 MARKERS = ("backend/app/services/compiler.py", "backend/app/worker/probe.py", "docs/spec.md")
+PROBE_TIMEOUT = 60
 
 
 def force_utf8() -> None:
@@ -26,8 +34,8 @@ def force_utf8() -> None:
                 pass
 
 
-def find_root() -> Path:
-    """按 环境变量 → skill 位置 → 当前目录 的顺序找 NewDiag 仓库根。"""
+def try_find_root() -> Path | None:
+    """按 环境变量 → skill 位置 → 当前目录 的顺序找 NewDiag 仓库根；找不到返回 None。"""
     seen: list[Path] = []
     for base in (os.environ.get("NEWDIAG_ROOT"), SKILL_DIR, Path.cwd()):
         if not base:
@@ -39,26 +47,27 @@ def find_root() -> Path:
             seen.append(candidate)
             if all((candidate / marker).is_file() for marker in MARKERS):
                 return candidate
-    raise SystemExit(
-        "找不到 NewDiag 仓库根目录。请设置环境变量 NEWDIAG_ROOT 指向包含 "
-        "backend/app 与 docs/spec.md 的目录。"
-    )
+    return None
 
 
-def platform_python(root: Path) -> str:
+def platform_python(root: Path | None) -> str:
     """平台侧解释器：项目 venv 优先，缺失时退回当前解释器。"""
-    for rel in ("backend/.venv/Scripts/python.exe", "backend/.venv/bin/python", ".venv/Scripts/python.exe"):
-        candidate = root / rel
-        if candidate.is_file():
-            return str(candidate)
+    if root is not None:
+        for rel in (
+            "backend/.venv/Scripts/python.exe",
+            "backend/.venv/bin/python",
+            ".venv/Scripts/python.exe",
+        ):
+            candidate = root / rel
+            if candidate.is_file():
+                return str(candidate)
     return sys.executable
 
 
-def ensure_platform(root: Path) -> dict:
-    """把 backend 放进 sys.path 并返回平台模块。"""
+def load_platform(root: Path) -> tuple[dict | None, str]:
+    """导入平台模块；失败时返回原因，由调用方决定降级还是报错。"""
     import logging
 
-    # 脚本自己会展示探测错误，不必再让平台 logger 打一遍带 JSON 的原文
     logging.getLogger("app.services.projects").setLevel(logging.ERROR)
     backend = str(root / "backend")
     if backend not in sys.path:
@@ -69,11 +78,8 @@ def ensure_platform(root: Path) -> dict:
         from app.services.compiler import ValidationError, compile_doc, validate_doc
         from app.services.flow_format import compact, expand
         from app.services.signatures import projects_in
-    except ImportError as exc:  # pragma: no cover - 环境问题时才走到
-        raise SystemExit(
-            f"无法导入平台模块（{exc}）。用项目 venv 运行：{platform_python(root)}，"
-            "并确认已执行 pip install -r backend/requirements.txt。"
-        ) from exc
+    except ImportError as exc:
+        return None, str(exc)
     return {
         "slots": slot_service,
         "generate": generate,
@@ -84,10 +90,34 @@ def ensure_platform(root: Path) -> dict:
         "compact": compact,
         "expand": expand,
         "projects_in": projects_in,
-    }
+    }, ""
 
 
-def load_doc(path: str | Path, expand_fn) -> dict:
+def resolve(explicit_root: str = "") -> tuple[Path | None, dict | None, str]:
+    """返回 (root, platform, mode)；mode 为 platform 或 standalone。
+
+    显式给了 --root 就必须成功，否则报错；自动定位失败则静默降级。
+    """
+    if explicit_root:
+        root = Path(explicit_root).expanduser().resolve()
+        if not all((root / marker).is_file() for marker in MARKERS):
+            raise SystemExit(f"--root 指向的目录不是 NewDiag 仓库（缺少 backend/app 或 docs/spec.md）：{root}")
+        platform, reason = load_platform(root)
+        if platform is None:
+            raise SystemExit(
+                f"指定了平台仓库，但平台模块导入失败：{reason}\n"
+                f"用项目解释器运行：{platform_python(root)}，并确认装好 backend/requirements.txt。"
+            )
+        return root, platform, "platform"
+
+    root = try_find_root()
+    if root is None:
+        return None, None, "standalone"
+    platform, _ = load_platform(root)
+    return root, platform, ("platform" if platform else "standalone")
+
+
+def load_doc(path: str | Path, expand_fn=None) -> dict:
     """读流程定义，接受导入用的 format=1 与持久 format=2；返回编辑投影。"""
     source = Path(path).expanduser()
     try:
@@ -99,6 +129,8 @@ def load_doc(path: str | Path, expand_fn) -> dict:
     if not isinstance(raw, dict):
         raise SystemExit("流程文档必须是 JSON 对象")
     if raw.get("format") == 2:
+        if expand_fn is None:
+            raise SystemExit("收到持久格式 2，但独立模式不知道怎么展开；请提供 format=1 的编辑投影")
         try:
             raw = expand_fn(raw)
         except ValueError as exc:
@@ -149,9 +181,120 @@ def load_projects(path: str | Path, root: Path | None = None) -> dict[str, Simpl
     return result
 
 
-def probe(doc: dict, projects: dict, platform: dict) -> dict:
-    """按槽位探测接口；返回 {工程:模块:接口: [参数] 或 {error}}。"""
-    return platform["slots"].probe_slots(doc, projects)
+# ---------------------------------------------------------------- 探测
+
+
+def probe(doc: dict, projects: dict, platform: dict | None, python: str = "") -> dict:
+    """按槽位探测接口；平台模式走 backend，独立模式走内置探针。"""
+    if platform is not None:
+        return platform["slots"].probe_slots(doc, projects)
+    return _builtin_probe_slots(doc, projects, python or sys.executable)
+
+
+def _builtin_probe_slots(doc: dict, projects: dict, python: str) -> dict:
+    result: dict = {}
+    catalogs: dict[tuple[str, str], dict] = {}
+    for call in _all_calls(doc):
+        project_name = str(call.get("project") or "")
+        module = str(call.get("module") or "")
+        interface = call.get("interface") or call.get("function") or ""
+        key = f"{project_name}:{module}:{interface}"
+        if key in result:
+            continue
+        cache_key = (project_name, module)
+        if cache_key not in catalogs:
+            project = projects.get(project_name)
+            if project is None:
+                catalogs[cache_key] = {"error": "工程未登记"}
+            else:
+                catalogs[cache_key] = run_builtin_probe(project, module or project.module, python)
+        catalog = catalogs[cache_key]
+        entry = next((item for item in catalog.get("functions", []) if item.get("name") == interface), None)
+        if entry and entry.get("kind") == "instance_method" and not call.get("object"):
+            result[key] = {"error": f"实例方法 {interface} 必须指定目标对象"}
+        elif entry and entry.get("interfaceError"):
+            result[key] = {"error": entry["interfaceError"]}
+        elif not entry:
+            result[key] = {"error": catalog.get("error") or f"公开接口 {interface} 不存在"}
+        else:
+            result[key] = [
+                *entry.get("params", []),
+                {
+                    "name": "$implementation",
+                    "type": entry.get("fingerprint", ""),
+                    "required": False,
+                    "default": None,
+                },
+                {
+                    "name": "$keywords",
+                    "type": "yes" if entry.get("variadicKeywords") else "no",
+                    "required": False,
+                    "default": None,
+                },
+            ]
+    return result
+
+
+def run_builtin_probe(project, module: str, python: str) -> dict:
+    payload = {
+        "name": project.name,
+        "path": project.path,
+        "module": module,
+        "factory": "",
+        "catalog": True,
+    }
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix="newdiag-probe-", delete=False, encoding="utf-8"
+    )
+    try:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.close()
+        request_path = handle.name
+    except OSError as exc:
+        handle.close()
+        return {"functions": [], "error": f"准备请求失败：{exc}"}
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    parts = [str(Path(project.path))]
+    if env.get("PYTHONPATH"):
+        parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    try:
+        completed = subprocess.run(
+            [python, str(SCRIPTS_DIR / "builtin_probe.py"), request_path],
+            cwd=project.path if Path(project.path).is_dir() else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {"functions": [], "error": f"接口发现超时（{PROBE_TIMEOUT}s）"}
+    except OSError as exc:
+        return {"functions": [], "error": f"无法启动解释器 {python}：{exc}"}
+    finally:
+        try:
+            os.unlink(request_path)
+        except OSError:
+            pass
+
+    if completed.returncode != 0 and not (completed.stdout or "").strip():
+        message = [line for line in (completed.stderr or "").splitlines() if line.strip()]
+        return {"functions": [], "error": " / ".join(message[-3:]) or f"探针退出码 {completed.returncode}"}
+    try:
+        return json.loads(_last_json_line(completed.stdout))
+    except (ValueError, json.JSONDecodeError):
+        return {"functions": [], "error": "探针输出无法解析为 JSON"}
+
+
+def _last_json_line(text: str) -> str:
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.lstrip().startswith("{"):
+            return line
+    raise ValueError("探针无输出")
 
 
 def probe_failures(functions: dict) -> list[tuple[str, str]]:
@@ -188,8 +331,32 @@ def error_brief(text, keep: int = 3) -> str:
     return " / ".join([lines[0], "…", *lines[-keep:]])
 
 
-def referenced_projects(doc: dict, platform: dict) -> set[str]:
-    return platform["projects_in"](doc)
+def referenced_projects(doc: dict, platform: dict | None) -> set[str]:
+    if platform is not None:
+        return platform["projects_in"](doc)
+    names = {str(call.get("project") or "") for call in _all_calls(doc)}
+    return {name for name in names if name}
+
+
+def _all_calls(doc: dict):
+    for node in doc.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        slots = node.get("slots")
+        if not isinstance(slots, dict):
+            continue
+        constructs = slots.get("constructs")
+        if isinstance(constructs, list):
+            for call in constructs:
+                if isinstance(call, dict):
+                    yield call
+        for name in ("fetch", "process", "present", "decide"):
+            call = slots.get(name)
+            if isinstance(call, dict):
+                yield call
+
+
+# ---------------------------------------------------------------- 小工具
 
 
 def doc_shape(raw: dict) -> tuple[int, int]:
@@ -235,6 +402,8 @@ def json_dump(value, path: str | Path) -> None:
     target.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def recompact(raw: dict, platform: dict) -> dict:
-    """走一遍平台的持久化压缩，提前暴露导入期的结构问题（不修改原对象）。"""
+def recompact(raw: dict, platform: dict | None) -> dict | None:
+    """平台模式下走一遍持久化压缩，提前暴露导入期的结构问题（不修改原对象）。"""
+    if platform is None:
+        return None
     return platform["compact"](deepcopy(raw))
