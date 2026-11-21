@@ -1,0 +1,111 @@
+{
+  "format": 1,
+  "name": "接入骨架（改完再导入）",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "构造业务对象；一个外接工程一个对象",
+      "position": { "x": 0, "y": 200 },
+      "inputs": [
+        { "name": "samples", "type": "array", "default": [1, 2, 8, 3] },
+        { "name": "limit", "type": "number", "default": 5 }
+      ],
+      "slots": {
+        "constructs": [
+          {
+            "object": "dataset",
+            "project": "组合数据示例",
+            "module": "records",
+            "interface": "Dataset",
+            "function": "Dataset",
+            "arguments": { "values": { "source": "input", "name": "samples" } }
+          },
+          {
+            "object": "rules",
+            "project": "组合判断示例",
+            "module": "checks",
+            "interface": "create_rules",
+            "function": "create_rules",
+            "arguments": { "limit": { "source": "input", "name": "limit" } }
+          }
+        ]
+      }
+    },
+    {
+      "id": "peak",
+      "kind": "investigation",
+      "title": "看曲线并判定峰值",
+      "detail": "取数、画曲线、自动判定",
+      "position": { "x": 260, "y": 200 },
+      "fields": {
+        "observation": "样本曲线",
+        "acquisition": "Dataset.series",
+        "assessment": "峰值超过 limit 判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "dataset",
+          "project": "组合数据示例",
+          "module": "records",
+          "interface": "Dataset.series",
+          "function": "series",
+          "arguments": {}
+        },
+        "present": {
+          "object": "dataset",
+          "project": "组合数据示例",
+          "module": "records",
+          "interface": "Dataset.series",
+          "function": "series",
+          "view": "line",
+          "arguments": {}
+        },
+        "decide": {
+          "object": "rules",
+          "project": "组合判断示例",
+          "module": "checks",
+          "interface": "ThresholdRules.check",
+          "function": "check",
+          "arguments": { "samples": { "source": "previous" } }
+        }
+      }
+    },
+    {
+      "id": "exceed",
+      "kind": "conclusion",
+      "title": "峰值超限",
+      "detail": "峰值高于阈值，按异常处理",
+      "position": { "x": 560, "y": 80 }
+    },
+    {
+      "id": "replace",
+      "kind": "remediation",
+      "title": "处理后复测",
+      "detail": "现场处理完再按同样参数复测",
+      "position": { "x": 800, "y": 80 }
+    },
+    {
+      "id": "solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "复测通过",
+      "position": { "x": 1040, "y": 80 }
+    },
+    {
+      "id": "escalate",
+      "kind": "escalation",
+      "title": "上升",
+      "detail": "现场无法处理，转交厂家工程师",
+      "position": { "x": 560, "y": 320 }
+    }
+  ],
+  "edges": [
+    { "id": "e-start", "from": "start", "to": "peak" },
+    { "id": "e-yes", "from": "peak", "to": "exceed", "branch": "yes", "order": 1 },
+    { "id": "e-no", "from": "peak", "to": "escalate", "branch": "no", "order": 2 },
+    { "id": "e-c", "from": "exceed", "to": "replace" },
+    { "id": "e-r", "from": "replace", "to": "solved" }
+  ]
+}

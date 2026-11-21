@@ -1,0 +1,16 @@
+{
+  "projects": [
+    {
+      "name": "组合数据示例",
+      "path": "@newdiag/examples/composed-basic/data_tools",
+      "module": "records",
+      "python": ""
+    },
+    {
+      "name": "组合判断示例",
+      "path": "@newdiag/examples/composed-basic/analysis_tools",
+      "module": "checks",
+      "python": ""
+    }
+  ]
+}
