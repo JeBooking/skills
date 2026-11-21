@@ -115,6 +115,12 @@ $env:NEWDIAG_ROOT = "D:\FILE\Projects\NewDiag"        # PowerShell
 
 ### 6. 登记与交付
 
+登记前先确认平台在跑，非 200 就不要硬发请求，只交付 `workflow.json` 与 `projects.json`：
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/api/flows   # 期望 200
+```
+
 登记（二选一）：
 
 ```bash
@@ -142,7 +148,7 @@ curl -X POST http://127.0.0.1:8000/api/flows/import \
 2. **有平台时三级验证缺一不可**：probe → validate → smoke，任一没过就不算接完。独立模式只能做到结构预检，接入平台后必须补冒烟
 3. **跨节点不传值**：`previous` 只指本节点上一步。下个节点要数据就自己 fetch（命中缓存）
 4. **present 的 view 与返回形状必须一致**：同一方法只能配一种 view
-5. **一个槽位只填一个调用**：要串联就分开填 fetch / process / present / decide
+5. **一个槽位只填一个调用**：要串联就分开填 fetch / process / present / decide；展示与判定可以直接调对象方法，不必接 `previous`
 6. **不改平台代码**：`backend/` 是平台。需要新能力先改 spec 再动手，不在接入任务里顺手改
 7. **不动业务逻辑**：适配层只做形态转换，阈值、判据、算法必须复用原实现
 8. **工程名不可改**：它是槽位与签名的引用键，改名会让已发布流程找不到实现

@@ -111,6 +111,10 @@ v1.16 的 `composition`、`binding`、`operation`、`pipeline` 等字段全部�
 
 `view` 与返回形状不匹配。最常见：`line` 配了返回 dict 的方法，或 `table` 配了返回数组的方法。对照第 6 节的契约改 `view` 或改方法的返回。
 
+**展示槽接不上上一槽的结果**
+
+拉取返回的结构和展示方法的入参不是一回事（如 fetch 返回 `{columns, rows}`，而 `table(limit)` 只要一个整数）。不要硬塞 `previous`：展示槽改用相同参数直接调该方法（取数已按参数缓存），或加处理槽把结构转成方法要的形状。
+
 ```
 line    → 非空数字数组
 metrics → [{"label","value","unit"?}]
