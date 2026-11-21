@@ -56,6 +56,8 @@ $env:NEWDIAG_ROOT = "D:\FILE\Projects\NewDiag"        # PowerShell
 
 命令里的解释器统一用项目 venv：Windows `backend/.venv/Scripts/python.exe`，Linux/macOS `backend/.venv/bin/python`。`smoke_run.py` 需要它（要用到 SQLAlchemy）。
 
+**用平台 venv 跑脚本，业务工程的解释器只通过 `--python` 传给探针。** 反过来用业务 venv 跑脚本，会因为缺 `sqlalchemy` 之类依赖静默降级成独立模式——输出里「模式」那行会写「独立预检」，看到这行先别下结论。
+
 ### 1. 读工程，不要读文件名就下结论
 
 看三样：包的入口（`__init__.py` / `__main__.py`）、对外暴露的类与函数、依赖声明（`requirements.txt` / `pyproject.toml`）。

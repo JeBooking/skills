@@ -166,6 +166,38 @@ class Diagnosis:
 - Tk Canvas 的绘制必须有窗口，平台进程里无头渲染不出来。曲线把数值数组交给 `view: line`；确实要图片就另用 PIL / matplotlib（`Agg` 后端）重画一份，不要试图对 Canvas 截图
 - 需要人看图像时，把渲染函数抽出来单独调用，返回 PNG 字节给 `node_sdk.save_file`
 
+**Qt 例外：窗口本身就是展示物。** 当图里必须同时有基类画的坐标轴/网格/水印和子类叠加的曲线/表格时，另画一份无法保证像素一致，正确做法是在离屏 `QApplication` 里构造原窗口再 `grab()`——这仍然只碰展示层，不算把界面拖进业务逻辑。
+
+```python
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # 必须在 import Qt 之前
+
+_app = None
+def _app():
+    global _app
+    if _app is None:
+        from PySide6.QtGui import QFontDatabase
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication([])
+        # offscreen 枚举不到系统字体，不注册的话中文全是方块
+        for path in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"):
+            if Path(path).is_file():
+                QFontDatabase.addApplicationFont(path)
+    return _app
+
+def window_png(widget):
+    _app()
+    pixmap = widget.grab()       # 会触发 paintEvent 与子类的 overlay
+    buffer = QBuffer(); buffer.open(QBuffer.WriteOnly)
+    pixmap.save(buffer, "PNG")
+    return node_sdk.save_file(bytes(buffer.data()), "png")
+```
+
+- `QApplication` 是全局单例，**不要挂在业务对象上**（不可 pickle），放模块级懒加载
+- 每次 `grab()` 几十毫秒，同一张图别在每个节点重复渲染；能复用的结果先在对象里缓存
+- 容器或精简系统没有中文字体时，注册 Noto CJK / 文泉驿，否则图里全是方块
+- 本地自测图片接口时没有 `node_sdk`：临时 stub 一个 `save_file(bytes, ext)`（写文件 + 返回 sha256 摘要）即可，正式冒烟由平台注入真实实现
+
 参考 `examples/desktop-mvc/`。
 
 ---
