@@ -58,9 +58,15 @@ $env:NEWDIAG_ROOT = "D:\FILE\Projects\NewDiag"        # PowerShell
 
 **用平台 venv 跑脚本，业务工程的解释器只通过 `--python` 传给探针。** 反过来用业务 venv 跑脚本，会因为缺 `sqlalchemy` 之类依赖静默降级成独立模式——输出里「模式」那行会写「独立预检」，看到这行先别下结论。
 
-### 1. 读工程，不要读文件名就下结论
+### 1. 摸清工程形态
 
-看三样：包的入口（`__init__.py` / `__main__.py`）、对外暴露的类与函数、依赖声明（`requirements.txt` / `pyproject.toml`）。
+```bash
+<python> scripts/inspect_project.py --path <工程目录> [--json out.json]
+```
+
+静态分析语法树，不 import 业务代码，有副作用也能跑。输出：规模、GUI/服务框架、入口、类与继承、绘制钩子、IO 点、形态判断、接入提示。
+
+拿到结果后再扫一眼被标为「入口」和「基类」的文件，确认静态分析看不出的东西（动态注册、元编程、运行时生成）。
 
 判定形态：纯函数 / 有状态类 / 工厂 / async / GUI / CLI / HTTP / 非 Python。这一步决定第 3 步改什么。
 
@@ -143,6 +149,14 @@ curl -X POST http://127.0.0.1:8000/api/flows/import \
 ```
 
 交付说明里写清：登记名、目录、模块、解释器、启动参数默认值、冒烟走过的节点路径、**没有覆盖的分支**（以及怎么走）。
+
+## 派给子 agent 时怎么说
+
+只给三句，其余由它自己查：
+
+> 在 `<仓库绝对路径>` 里用 newdiag-project-integration 完成接入。只改这个仓库，自己跑通三级验证，卡住就如实报告。
+
+不要替它总结代码结构、不要给改造方案、不要预先交代环境变量——这些由 `inspect_project.py` 和 skill 自己得出。给的越多，越测不出 skill 真实水平，也越容易把 agent 引到你的思路上。
 
 ## 硬规则
 
